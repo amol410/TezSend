@@ -1,22 +1,22 @@
-import { Router, Request, Response } from 'express';
-import bcrypt from 'bcryptjs';
-import jwt from 'jsonwebtoken';
-import { OAuth2Client } from 'google-auth-library';
-import prisma from '../db';
-import { authenticate, AuthRequest } from '../middleware/auth';
-import { firebaseApp } from '../firebaseAdmin';
-import { getAuth } from 'firebase-admin/auth';
+const { Router } = require('express');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const { OAuth2Client } = require('google-auth-library');
+const prisma = require('../db');
+const { authenticate } = require('../middleware/auth');
+const { firebaseApp } = require('../firebaseAdmin');
+const { getAuth } = require('firebase-admin/auth');
 
 const router = Router();
 const JWT_SECRET = process.env.JWT_SECRET || 'fallback-secret-key';
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || 'YOUR_GOOGLE_CLIENT_ID';
 const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
 
-const signToken = (userId: string) =>
+const signToken = (userId) =>
   jwt.sign({ userId }, JWT_SECRET, { expiresIn: '7d' });
 
 // ─── Register with email + password ──────────────────────────────────────────
-router.post('/register', async (req: Request, res: Response) => {
+router.post('/register', async (req, res) => {
   const { name, email, password, phone } = req.body;
 
   if (!email || !password || !name) {
@@ -47,7 +47,7 @@ router.post('/register', async (req: Request, res: Response) => {
 });
 
 // ─── Login with email + password ─────────────────────────────────────────────
-router.post('/login', async (req: Request, res: Response) => {
+router.post('/login', async (req, res) => {
   const { email, password } = req.body;
 
   if (!email || !password) {
@@ -75,7 +75,7 @@ router.post('/login', async (req: Request, res: Response) => {
 });
 
 // ─── Google OAuth ─────────────────────────────────────────────────────────────
-router.post('/google', async (req: Request, res: Response) => {
+router.post('/google', async (req, res) => {
   const { idToken } = req.body;
 
   if (!idToken) {
@@ -102,7 +102,7 @@ router.post('/google', async (req: Request, res: Response) => {
 
     if (!user) {
       user = await prisma.user.create({
-        data: { googleId, email: email!, name, avatar }
+        data: { googleId, email, name, avatar }
       });
     } else if (!user.googleId) {
       // Link Google to existing email account
@@ -121,8 +121,42 @@ router.post('/google', async (req: Request, res: Response) => {
   }
 });
 
+// ─── Firebase-backed Google sign-in (accepts Firebase ID token) ──────────────
+router.post('/firebase-google', async (req, res) => {
+  const { idToken } = req.body;
+
+  if (!idToken) {
+    return res.status(400).json({ message: 'Firebase ID token is required' });
+  }
+
+  try {
+    const decodedToken = await getAuth(firebaseApp).verifyIdToken(idToken);
+    const email = decodedToken.email;
+    const firebaseUid = decodedToken.uid;
+    const name = decodedToken.name || 'Firebase User';
+    const avatar = decodedToken.picture || null;
+
+    if (!email) return res.status(401).json({ message: 'Invalid Firebase token (no email)' });
+
+    let user = await prisma.user.findFirst({ where: { OR: [{ email }, { googleId: firebaseUid }] } });
+
+    if (!user) {
+      user = await prisma.user.create({ data: { googleId: firebaseUid, email, name, avatar } });
+    } else if (!user.googleId) {
+      user = await prisma.user.update({ where: { id: user.id }, data: { googleId: firebaseUid, avatar: avatar || user.avatar } });
+    }
+
+    const token = signToken(user.id);
+    const { passwordHash: _, ...safeUser } = user;
+    res.json({ token, user: safeUser });
+  } catch (error) {
+    console.error('Firebase Google auth error:', error?.message || error);
+    res.status(401).json({ message: 'Firebase Google authentication failed', detail: error?.message });
+  }
+});
+
 // ─── Firebase Phone Auth ──────────────────────────────────────────────────────
-router.post('/firebase-phone', async (req: Request, res: Response) => {
+router.post('/firebase-phone', async (req, res) => {
   const { idToken } = req.body;
 
   if (!idToken) {
@@ -159,7 +193,7 @@ router.post('/firebase-phone', async (req: Request, res: Response) => {
     const token = signToken(user.id);
     const { passwordHash: _, ...safeUser } = user;
     res.json({ token, user: safeUser });
-  } catch (error: any) {
+  } catch (error) {
     console.error('Firebase Phone auth error (code):', error?.code);
     console.error('Firebase Phone auth error (message):', error?.message);
     console.error('Firebase Phone auth error (full):', error);
@@ -168,7 +202,7 @@ router.post('/firebase-phone', async (req: Request, res: Response) => {
 });
 
 // ─── Mock Phone Auth (Bypass Firebase) ────────────────────────────────────────
-router.post('/mock-phone', async (req: Request, res: Response) => {
+router.post('/mock-phone', async (req, res) => {
   const { phone } = req.body;
 
   if (!phone) {
@@ -197,10 +231,10 @@ router.post('/mock-phone', async (req: Request, res: Response) => {
 
 
 // ─── Get current user ─────────────────────────────────────────────────────────
-router.get('/me', authenticate, async (req: AuthRequest, res: Response) => {
+router.get('/me', authenticate, async (req, res) => {
   try {
     const user = await prisma.user.findUnique({
-      where: { id: req.userId! },
+      where: { id: req.userId },
       select: {
         id: true, name: true, email: true, phone: true, avatar: true,
         googleId: true, createdAt: true
@@ -214,7 +248,7 @@ router.get('/me', authenticate, async (req: AuthRequest, res: Response) => {
 });
 
 // ─── Link phone to an existing account (post email/Google signup) ─────────────
-router.post('/link-phone', authenticate, async (req: AuthRequest, res: Response) => {
+router.post('/link-phone', authenticate, async (req, res) => {
   const { idToken } = req.body;
 
   if (!idToken) {
@@ -230,23 +264,22 @@ router.post('/link-phone', authenticate, async (req: AuthRequest, res: Response)
     }
 
     // Check the phone isn't already taken by a different account
-    const existing = await prisma.user.findFirst({ where: { phone, NOT: { id: req.userId! } } });
+    const existing = await prisma.user.findFirst({ where: { phone, NOT: { id: req.userId } } });
     if (existing) {
       return res.status(409).json({ message: 'This phone number is already linked to another account' });
     }
 
     const user = await prisma.user.update({
-      where: { id: req.userId! },
+      where: { id: req.userId },
       data: { phone },
       select: { id: true, name: true, email: true, phone: true, avatar: true, googleId: true, createdAt: true }
     });
 
     res.json({ message: 'Phone number linked successfully', user });
-  } catch (error: any) {
+  } catch (error) {
     console.error('Link phone error:', error?.message);
     res.status(401).json({ message: 'Phone verification failed', detail: error?.message });
   }
 });
 
-export default router;
-
+module.exports = router;

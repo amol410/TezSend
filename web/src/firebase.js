@@ -15,3 +15,18 @@ const firebaseConfig = {
 // Initialize Firebase
 const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
+
+// Development toggle: disable app verification (reCAPTCHA) when testing locally.
+// Set VITE_DISABLE_RECAPTCHA=true in your web/.env for local testing only.
+try {
+  const DISABLE = import.meta.env.VITE_DISABLE_RECAPTCHA === 'true';
+  if (DISABLE) {
+    // This flag allows Firebase phone auth to bypass reCAPTCHA checks in dev.
+    // WARNING: Do NOT enable in production.
+    auth.settings = auth.settings || {};
+    auth.settings.appVerificationDisabledForTesting = true;
+    console.warn('[TezSend] Firebase appVerificationDisabledForTesting = true (DEV)');
+  }
+} catch (e) {
+  // import.meta may not be available in some test environments — ignore.
+}

@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import AuthPage from './pages/AuthPage';
 import Dashboard from './pages/Dashboard';
 import Payment from './pages/Payment';
-import PhoneVerifyPage from './pages/PhoneVerifyPage';
+// Phone verification removed from frontend — keep only email/google auth
 import Layout from './components/Layout';
 import api from './api';
 import './index.css';
@@ -15,35 +15,10 @@ const ProtectedRoute = ({ children }) => {
   return isAuthenticated ? children : <Navigate to="/login" />;
 };
 
-// ─── Phone guard: must have a verified phone to access the app ────────────────
-function PhoneGatedRoute({ children }) {
-  const [status, setStatus] = useState('loading'); // 'loading' | 'has-phone' | 'no-phone'
+// Phone verification removed. All authenticated users have full access.
 
-  useEffect(() => {
-    api.get('/auth/me')
-      .then(res => {
-        setStatus(res.data.phone ? 'has-phone' : 'no-phone');
-      })
-      .catch(() => {
-        // Token invalid — clear and go to login
-        localStorage.removeItem('token');
-        setStatus('no-phone');
-      });
-  }, []);
-
-  if (status === 'loading') {
-    return (
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', background: 'var(--bg)' }}>
-        <div style={{ color: 'var(--text-secondary)' }}>Loading…</div>
-      </div>
-    );
-  }
-
-  if (status === 'no-phone') return <Navigate to="/verify-phone" />;
-  return children;
-}
-
-const GOOGLE_CLIENT_ID = 'YOUR_GOOGLE_CLIENT_ID_HERE'; // Replace with actual Client ID
+// Read Google OAuth Client ID from Vite env. Set `VITE_GOOGLE_CLIENT_ID` in web/.env
+const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || 'YOUR_GOOGLE_CLIENT_ID_HERE'; // Replace with actual Client ID
 
 function App() {
   return (
@@ -53,24 +28,12 @@ function App() {
           {/* Public */}
           <Route path="/login" element={<AuthPage />} />
 
-          {/* Phone verification — requires a token but no phone yet */}
-          <Route
-            path="/verify-phone"
-            element={
-              <ProtectedRoute>
-                <PhoneVerifyPage />
-              </ProtectedRoute>
-            }
-          />
-
-          {/* Protected + phone-gated */}
+          {/* Protected */}
           <Route
             path="/"
             element={
               <ProtectedRoute>
-                <PhoneGatedRoute>
-                  <Layout />
-                </PhoneGatedRoute>
+                <Layout />
               </ProtectedRoute>
             }
           >

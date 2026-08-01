@@ -536,6 +536,51 @@ body {
   to { opacity: 1; transform: translateY(0); }
 }
 
+/* ─── Header ───────────────────────────────────────────────────────────────── */
+.app-header {
+  height: var(--nav-h);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0 2rem;
+  background: transparent;
+  border-bottom: 1px solid rgba(255,255,255,0.03);
+  position: sticky;
+  top: 0;
+  z-index: 50;
+}
+.header-left { display: flex; align-items: center; gap: 1rem; }
+.brand-small { font-size: 1.05rem; font-weight: 800; background: linear-gradient(135deg,var(--brand),var(--purple)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+.search-box { display:flex; align-items:center; gap:8px; background:var(--bg-elevated); padding:8px 12px; border-radius:12px; border:1px solid var(--border); }
+.search-box input { background:transparent; border: none; outline: none; color:var(--text-primary); width:260px; }
+.header-right { display:flex; align-items:center; gap:12px; }
+.icon-btn { background:transparent; border:1px solid var(--border); padding:8px; border-radius:10px; color:var(--text-secondary); cursor:pointer; }
+.header-user { display:flex; align-items:center; gap:10px; }
+.header-user .avatar.small { width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,var(--brand),var(--purple));font-weight:700; }
+.header-user-info { display:flex; flex-direction:column; line-height:1; }
+.header-user-name { font-size:0.9rem; font-weight:700; }
+.header-user-email { font-size:0.75rem; color:var(--text-secondary); }
+
+/* ─── Dashboard top layout */
+.dashboard-top { display:flex; gap:1rem; align-items:flex-start; margin-bottom:1rem; }
+.balance-card { flex:1; }
+.balance-row { display:flex; align-items:center; justify-content:space-between; gap:1rem; }
+.balance-label { font-size:0.85rem; color:var(--text-secondary); margin-bottom:6px; }
+.balance-value { font-size:1.6rem; font-weight:800; }
+.quick-actions { display:flex; gap:0.5rem; margin-top:1rem; }
+.qa-item { background:transparent; border:1px solid var(--border); padding:8px 10px; border-radius:10px; color:var(--text-secondary); cursor:pointer; }
+.mini-cards { display:flex; gap:1rem; width:380px; }
+
+@media (max-width: 900px) { .mini-cards { display:none; } .search-box input { width:140px; } }
+
+/* Inline reCAPTCHA container spacing for phone forms */
+#recaptcha-container, #recaptcha-phone-container {
+  margin-top: 0.6rem;
+}
+
+
+
 .error-msg {
   background: var(--red-dim);
   border: 1px solid rgba(239,68,68,0.3);

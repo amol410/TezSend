@@ -1,7 +1,7 @@
-import { Router } from 'express';
-import { authenticate, AuthRequest } from '../middleware/auth';
-import prisma from '../db';
-import crypto from 'crypto';
+const { Router } = require('express');
+const { authenticate } = require('../middleware/auth');
+const prisma = require('../db');
+const crypto = require('crypto');
 
 const router = Router();
 
@@ -10,7 +10,7 @@ const CONVENIENCE_FEE_RATE = 0.02;
 
 router.use(authenticate);
 
-router.post('/calculate-fee', (req: AuthRequest, res) => {
+router.post('/calculate-fee', (req, res) => {
   const { amount } = req.body;
   if (!amount || amount <= 0) {
     return res.status(400).json({ message: 'Invalid amount' });
@@ -26,7 +26,7 @@ router.post('/calculate-fee', (req: AuthRequest, res) => {
   });
 });
 
-router.post('/initiate', async (req: AuthRequest, res) => {
+router.post('/initiate', async (req, res) => {
   const { beneficiaryId, amount } = req.body;
   
   if (!beneficiaryId || !amount) {
@@ -40,7 +40,7 @@ router.post('/initiate', async (req: AuthRequest, res) => {
     // 1. Create transaction record in DB
     const transaction = await prisma.transaction.create({
       data: {
-        userId: req.userId!,
+        userId: req.userId,
         beneficiaryId,
         amount,
         convenienceFee,
@@ -72,10 +72,10 @@ router.post('/initiate', async (req: AuthRequest, res) => {
   }
 });
 
-router.get('/history', async (req: AuthRequest, res) => {
+router.get('/history', async (req, res) => {
   try {
     const transactions = await prisma.transaction.findMany({
-      where: { userId: req.userId! },
+      where: { userId: req.userId },
       include: { beneficiary: true },
       orderBy: { createdAt: 'desc' }
     });
@@ -85,4 +85,4 @@ router.get('/history', async (req: AuthRequest, res) => {
   }
 });
 
-export default router;
+module.exports = router;

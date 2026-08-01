@@ -1,17 +1,15 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Send, Lock, User, AlertCircle } from 'lucide-react';
 import { GoogleLogin } from '@react-oauth/google';
-import { RecaptchaVerifier, signInWithPhoneNumber } from "firebase/auth";
 import { auth } from '../firebase';
+import { GoogleAuthProvider, signInWithCredential } from 'firebase/auth';
 import api, { setAuthToken } from '../api';
 
-// Validate Firebase Auth is initialized before any phone auth is attempted
-if (!auth || !auth.app) {
-  console.error('[TezSend] Firebase auth is not initialized. Check firebase.js.');
-}
+// Authentication UI uses server endpoints for Google and email flows.
 
 export default function AuthPage() {
+  // No phone auth on frontend — only Google and email/password
   const [authMode, setAuthMode] = useState('login'); // 'login', 'signup', 'phone'
   const [error, setError] = useState('');
   const navigate = useNavigate();
@@ -21,50 +19,7 @@ export default function AuthPage() {
     name: '', email: '', password: ''
   });
 
-  // Phone Auth State
-  const [phone, setPhone] = useState('');
-  const [otp, setOtp] = useState('');
-  const [confirmationResult, setConfirmationResult] = useState(null);
-  const [recaptchaSolved, setRecaptchaSolved] = useState(false);
-
-  // Initialize visible reCAPTCHA when the phone tab is active.
-  // size:'normal' (checkbox widget) reliably works on localhost even when
-  // reCAPTCHA Enterprise isn't configured — the user checks the box,
-  // which gives Firebase a valid token before it tries to send the SMS.
-  useEffect(() => {
-    if (authMode !== 'phone') {
-      if (window.recaptchaVerifier) {
-        try { window.recaptchaVerifier.clear(); } catch (_) {}
-        window.recaptchaVerifier = null;
-      }
-      setRecaptchaSolved(false);
-      return;
-    }
-
-    // Small delay so the DOM element is mounted before we attach
-    const timer = setTimeout(() => {
-      if (window.recaptchaVerifier) return; // already set up
-      window.recaptchaVerifier = new RecaptchaVerifier(auth, 'recaptcha-container', {
-        size: 'normal',
-        callback: () => {
-          setRecaptchaSolved(true);
-        },
-        'expired-callback': () => {
-          setRecaptchaSolved(false);
-        },
-      });
-      window.recaptchaVerifier.render();
-    }, 100);
-
-    return () => {
-      clearTimeout(timer);
-      if (window.recaptchaVerifier) {
-        try { window.recaptchaVerifier.clear(); } catch (_) {}
-        window.recaptchaVerifier = null;
-      }
-      setRecaptchaSolved(false);
-    };
-  }, [authMode]);
+  // No recaptcha or phone setup
 
   const handleChange = (e) => setFormData({ ...formData, [e.target.name]: e.target.value });
 
@@ -89,82 +44,38 @@ export default function AuthPage() {
 
   const handleGoogleSuccess = async (credentialResponse) => {
     try {
+      // First attempt: send Google ID token directly to backend (/auth/google)
       const res = await api.post('/auth/google', { idToken: credentialResponse.credential });
       setAuthToken(res.data.token);
       navigate('/');
+      return;
     } catch (err) {
+      setError('Google Sign-In failed.');
+      // If direct Google token exchange fails (invalid_client), fallback to
+      // signing in with Firebase using the credential and send a Firebase ID
+      // token to the backend (/auth/firebase-google).
+      console.warn('Direct Google exchange failed, attempting Firebase fallback', err?.response?.data || err);
+    }
+
+    try {
+      const googleIdToken = credentialResponse.credential;
+      const firebaseCred = GoogleAuthProvider.credential(googleIdToken);
+      const userCred = await signInWithCredential(auth, firebaseCred);
+      const firebaseIdToken = await userCred.user.getIdToken();
+      const res2 = await api.post('/auth/firebase-google', { idToken: firebaseIdToken });
+      setAuthToken(res2.data.token);
+      navigate('/');
+    } catch (err) {
+      console.error('Firebase fallback for Google sign-in failed', err);
       setError('Google Sign-In failed.');
     }
   };
 
-  const handleSendOTP = async (e) => {
-    e.preventDefault();
-    setError('');
-
-    if (!phone) {
-      setError('Please enter a valid phone number with country code (e.g., +91...)');
-      return;
-    }
-
-    if (!auth || !auth.app) {
-      setError('Firebase is not initialized. Please refresh the page.');
-      return;
-    }
-
-    if (!recaptchaSolved) {
-      setError('Please complete the reCAPTCHA check first.');
-      return;
-    }
-
-    try {
-      const appVerifier = window.recaptchaVerifier;
-      if (!appVerifier) {
-        setError('reCAPTCHA not ready. Please refresh and try again.');
-        return;
-      }
-      const confirmation = await signInWithPhoneNumber(auth, phone, appVerifier);
-      setConfirmationResult(confirmation);
-    } catch (err) {
-      // Reset reCAPTCHA on failure so the user can try again
-      setRecaptchaSolved(false);
-      if (window.recaptchaVerifier) {
-        try { window.recaptchaVerifier.clear(); } catch (_) {}
-        window.recaptchaVerifier = null;
-      }
-      console.error('[TezSend] sendOTP error:', err);
-      setError(err.message || 'Failed to send OTP. Please try again.');
-    }
-  };
-
-  const handleVerifyOTP = async (e) => {
-    e.preventDefault();
-    setError('');
-
-    try {
-      const result = await confirmationResult.confirm(otp);
-      // Force-refresh ensures we always send a fresh, non-expired ID token
-      const idToken = await result.user.getIdToken(true);
-
-      const res = await api.post('/auth/firebase-phone', { idToken });
-      setAuthToken(res.data.token);
-      navigate('/');
-    } catch (err) {
-      setError(err?.response?.data?.detail || err.message || 'Invalid OTP code. Please try again.');
-    }
-  };
+  // phone/OTP handlers removed
 
 
   return (
     <div className="auth-page fade-in">
-      {/* reCAPTCHA container — visible checkbox widget, shown only on phone tab */}
-      <div
-        id="recaptcha-container"
-        style={{
-          position: 'fixed', bottom: '1.5rem', left: '50%', transform: 'translateX(-50%)',
-          zIndex: 999,
-          display: authMode === 'phone' && !confirmationResult ? 'block' : 'none'
-        }}
-      />
       
       {/* Brand Side */}
       <div className="auth-brand">
@@ -198,13 +109,12 @@ export default function AuthPage() {
       <div className="auth-form-side">
         <div className="auth-form-box">
           <div className="auth-tabs">
-            <button className={`auth-tab ${authMode === 'login' ? 'active' : ''}`} onClick={() => { setAuthMode('login'); setConfirmationResult(null); }}>Login</button>
-            <button className={`auth-tab ${authMode === 'signup' ? 'active' : ''}`} onClick={() => { setAuthMode('signup'); setConfirmationResult(null); }}>Sign Up</button>
-            <button className={`auth-tab ${authMode === 'phone' ? 'active' : ''}`} onClick={() => { setAuthMode('phone'); setConfirmationResult(null); }}>Phone</button>
+            <button className={`auth-tab ${authMode === 'login' ? 'active' : ''}`} onClick={() => { setAuthMode('login'); }}>Login</button>
+            <button className={`auth-tab ${authMode === 'signup' ? 'active' : ''}`} onClick={() => { setAuthMode('signup'); }}>Sign Up</button>
           </div>
 
           <h2 style={{ marginBottom: '1.5rem' }}>
-            {authMode === 'login' ? 'Welcome back' : authMode === 'signup' ? 'Create an account' : 'Continue with Phone'}
+            {authMode === 'login' ? 'Welcome back' : 'Create an account'}
           </h2>
 
           {error && (
@@ -253,48 +163,7 @@ export default function AuthPage() {
             </>
           )}
 
-          {authMode === 'phone' && (
-            <div>
-              {!confirmationResult ? (
-                <form onSubmit={handleSendOTP}>
-                  <div className="form-group">
-                    <label className="form-label">Phone Number</label>
-                    <input 
-                      type="tel" 
-                      className="form-input" 
-                      placeholder="+91 9876543210" 
-                      value={phone} 
-                      onChange={(e) => setPhone(e.target.value)} 
-                      required 
-                    />
-                  </div>
-                  <button type="submit" className="btn btn-primary btn-full mt-1">
-                    Send OTP
-                  </button>
-                </form>
-              ) : (
-                <form onSubmit={handleVerifyOTP}>
-                  <div className="form-group">
-                    <label className="form-label">Enter 6-digit OTP</label>
-                    <input 
-                      type="text" 
-                      className="form-input" 
-                      placeholder="••••••" 
-                      value={otp} 
-                      onChange={(e) => setOtp(e.target.value)} 
-                      required 
-                    />
-                  </div>
-                  <button type="submit" className="btn btn-primary btn-full mt-1">
-                    Verify & Login
-                  </button>
-                  <button type="button" className="btn btn-ghost btn-full mt-1" onClick={() => setConfirmationResult(null)}>
-                    Change Phone Number
-                  </button>
-                </form>
-              )}
-            </div>
-          )}
+          {/* Phone UI removed from frontend */}
 
         </div>
       </div>

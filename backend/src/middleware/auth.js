@@ -1,14 +1,9 @@
-import { Request, Response, NextFunction } from 'express';
-import jwt from 'jsonwebtoken';
-import prisma from '../db';
+const jwt = require('jsonwebtoken');
+const prisma = require('../db');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'fallback-secret-key';
 
-export interface AuthRequest extends Request {
-  userId?: string;
-}
-
-export const authenticate = async (req: AuthRequest, res: Response, next: NextFunction) => {
+const authenticate = async (req, res, next) => {
   const token = req.headers.authorization?.split(' ')[1];
 
   if (!token) {
@@ -16,7 +11,7 @@ export const authenticate = async (req: AuthRequest, res: Response, next: NextFu
   }
 
   try {
-    const decoded = jwt.verify(token, JWT_SECRET) as { userId: string };
+    const decoded = jwt.verify(token, JWT_SECRET);
     
     // Verify user actually exists in the database
     const user = await prisma.user.findUnique({ where: { id: decoded.userId } });
@@ -30,3 +25,5 @@ export const authenticate = async (req: AuthRequest, res: Response, next: NextFu
     return res.status(401).json({ message: 'Invalid or expired token' });
   }
 };
+
+module.exports = { authenticate };
