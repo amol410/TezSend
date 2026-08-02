@@ -1,11 +1,11 @@
 {
   "name": "tezsend",
   "version": "1.0.0",
-  "description": "TezSend - Payment Backend API",
+  "description": "TezSend - Fintech App",
   "main": "backend/server.js",
   "scripts": {
     "start": "node backend/server.js",
-    "build": "cd backend && npm install && npm run migrate",
+    "build": "cd web && npm install && npm run build",
     "postinstall": "cd backend && npm install"
   },
   "engines": {

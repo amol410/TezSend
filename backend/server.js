@@ -1,6 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const path = require('path');
 const authRoutes = require('./src/routes/auth');
 const cardRoutes = require('./src/routes/cards');
 const beneficiaryRoutes = require('./src/routes/beneficiaries');
@@ -55,6 +56,19 @@ app.use((err, req, res, next) => {
   console.error('Unhandled error:', err);
   res.status(500).json({ message: 'Internal server error' });
 });
+
+// ─── Serve React frontend (production) ───────────────────────────────────────
+const frontendDist = path.resolve(__dirname, '..', 'web', 'dist');
+if (require('fs').existsSync(frontendDist)) {
+  app.use(express.static(frontendDist));
+  // SPA fallback — all non-API routes serve index.html
+  app.get('*', (req, res) => {
+    res.sendFile(path.join(frontendDist, 'index.html'));
+  });
+  console.log(`📦 Serving frontend from: ${frontendDist}`);
+} else {
+  console.log('ℹ️  No frontend build found. Run: cd web && npm run build');
+}
 
 // ─── Start server ─────────────────────────────────────────────────────────────
 const server = app.listen(PORT, () => {

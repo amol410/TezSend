@@ -2,7 +2,7 @@ import axios from 'axios';
 
 // Create an Axios instance
 const apiClient = axios.create({
-  baseURL: '/api', // Point to local proxy which forwards to production
+  baseURL: '/api',
   headers: {
     'Content-Type': 'application/json',
   },
