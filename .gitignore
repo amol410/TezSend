@@ -37,3 +37,6 @@ npm-debug.log*
 
 # TSX / TypeScript cache
 tsconfig.tsbuildinfo
+
+# Android app (separate repo)
+app/
