@@ -1,5 +1,5 @@
 const jwt = require('jsonwebtoken');
-const prisma = require('../db');
+const db = require('../db');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'fallback-secret-key';
 
@@ -12,10 +12,9 @@ const authenticate = async (req, res, next) => {
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
-    
-    // Verify user actually exists in the database
-    const user = await prisma.user.findUnique({ where: { id: decoded.userId } });
-    if (!user) {
+    const [rows] = await db.query('SELECT id FROM User WHERE id = ?', [decoded.userId]);
+
+    if (rows.length === 0) {
       return res.status(401).json({ message: 'User session invalid or expired' });
     }
 

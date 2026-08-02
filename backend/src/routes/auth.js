@@ -1,8 +1,9 @@
 const { Router } = require('express');
+const { randomUUID } = require('crypto');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { OAuth2Client } = require('google-auth-library');
-const prisma = require('../db');
+const db = require('../db');
 const { authenticate } = require('../middleware/auth');
 const { firebaseApp } = require('../firebaseAdmin');
 const { getAuth } = require('firebase-admin/auth');
@@ -12,8 +13,9 @@ const JWT_SECRET = process.env.JWT_SECRET || 'fallback-secret-key';
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || 'YOUR_GOOGLE_CLIENT_ID';
 const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
 
-const signToken = (userId) =>
-  jwt.sign({ userId }, JWT_SECRET, { expiresIn: '7d' });
+const SAFE_FIELDS = 'id, phone, email, name, googleId, avatar, createdAt, updatedAt';
+
+const signToken = (userId) => jwt.sign({ userId }, JWT_SECRET, { expiresIn: '7d' });
 
 // ─── Register with email + password ──────────────────────────────────────────
 router.post('/register', async (req, res) => {
@@ -24,25 +26,31 @@ router.post('/register', async (req, res) => {
   }
 
   try {
-    const existing = await prisma.user.findFirst({
-      where: { OR: [{ email }, ...(phone ? [{ phone }] : [])] }
-    });
-
-    if (existing) {
+    let checkSql = 'SELECT id FROM User WHERE email = ?';
+    let checkParams = [email];
+    if (phone) {
+      checkSql = 'SELECT id FROM User WHERE email = ? OR phone = ?';
+      checkParams = [email, phone];
+    }
+    const [existing] = await db.query(checkSql, checkParams);
+    if (existing.length > 0) {
       return res.status(400).json({ message: 'User with this email already exists' });
     }
 
     const passwordHash = await bcrypt.hash(password, 10);
+    const id = randomUUID();
+    const now = new Date();
 
-    const user = await prisma.user.create({
-      data: { name, email, passwordHash, ...(phone ? { phone } : {}) }
-    });
+    await db.query(
+      'INSERT INTO User (id, email, name, passwordHash, phone, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [id, email, name, passwordHash, phone || null, now, now]
+    );
 
-    const token = signToken(user.id);
-    const { passwordHash: _, ...safeUser } = user;
-    res.status(201).json({ token, user: safeUser });
+    const [rows] = await db.query(`SELECT ${SAFE_FIELDS} FROM User WHERE id = ?`, [id]);
+    const token = signToken(id);
+    res.status(201).json({ token, user: rows[0] });
   } catch (error) {
-    res.status(500).json({ message: 'Error creating user', error });
+    res.status(500).json({ message: 'Error creating user', error: error.message });
   }
 });
 
@@ -55,7 +63,8 @@ router.post('/login', async (req, res) => {
   }
 
   try {
-    const user = await prisma.user.findUnique({ where: { email } });
+    const [rows] = await db.query('SELECT * FROM User WHERE email = ?', [email]);
+    const user = rows[0];
 
     if (!user || !user.passwordHash) {
       return res.status(401).json({ message: 'Invalid email or password' });
@@ -67,67 +76,82 @@ router.post('/login', async (req, res) => {
     }
 
     const token = signToken(user.id);
-    const { passwordHash: _, ...safeUser } = user;
-    res.json({ token, user: safeUser });
+    const [safeRows] = await db.query(`SELECT ${SAFE_FIELDS} FROM User WHERE id = ?`, [user.id]);
+    res.json({ token, user: safeRows[0] });
   } catch (error) {
-    res.status(500).json({ message: 'Error logging in', error });
+    res.status(500).json({ message: 'Error logging in', error: error.message });
   }
 });
 
 // ─── Google OAuth ─────────────────────────────────────────────────────────────
 router.post('/google', async (req, res) => {
   const { idToken } = req.body;
-
-  if (!idToken) {
-    return res.status(400).json({ message: 'Google ID token is required' });
-  }
+  if (!idToken) return res.status(400).json({ message: 'Google token is required' });
 
   try {
-    const ticket = await googleClient.verifyIdToken({
-      idToken,
-      audience: GOOGLE_CLIENT_ID
+    let googleId, email, name, avatar;
+
+    // @react-oauth/google sends an access_token, not an id_token
+    // Try fetching from Google userinfo endpoint first
+    const userinfoRes = await fetch(`https://www.googleapis.com/oauth2/v3/userinfo`, {
+      headers: { Authorization: `Bearer ${idToken}` }
     });
 
-    const payload = ticket.getPayload();
-    if (!payload || !payload.email) {
-      return res.status(401).json({ message: 'Invalid Google token' });
+    if (userinfoRes.ok) {
+      const userinfo = await userinfoRes.json();
+      googleId = userinfo.sub;
+      email = userinfo.email;
+      name = userinfo.name;
+      avatar = userinfo.picture;
+    } else {
+      // Fallback: try verifying as a standard Google ID Token
+      const ticket = await googleClient.verifyIdToken({ idToken, audience: GOOGLE_CLIENT_ID });
+      const payload = ticket.getPayload();
+      if (!payload || !payload.email) return res.status(401).json({ message: 'Invalid Google token' });
+      googleId = payload.sub;
+      email = payload.email;
+      name = payload.name;
+      avatar = payload.picture;
     }
 
-    const { sub: googleId, email, name, picture: avatar } = payload;
+    if (!email) return res.status(401).json({ message: 'Could not retrieve email from Google' });
 
-    // Find by Google ID or email (links account if already registered)
-    let user = await prisma.user.findFirst({
-      where: { OR: [{ googleId }, { email }] }
-    });
+    const [rows] = await db.query('SELECT * FROM User WHERE googleId = ? OR email = ? LIMIT 1', [googleId, email]);
+    let user = rows[0];
 
     if (!user) {
-      user = await prisma.user.create({
-        data: { googleId, email, name, avatar }
-      });
+      const id = randomUUID();
+      const now = new Date();
+      await db.query(
+        'INSERT INTO User (id, googleId, email, name, avatar, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [id, googleId, email, name, avatar || null, now, now]
+      );
+      const [newRows] = await db.query(`SELECT ${SAFE_FIELDS} FROM User WHERE id = ?`, [id]);
+      user = newRows[0];
     } else if (!user.googleId) {
-      // Link Google to existing email account
-      user = await prisma.user.update({
-        where: { id: user.id },
-        data: { googleId, avatar: avatar || user.avatar }
-      });
+      await db.query('UPDATE User SET googleId = ?, avatar = ?, updatedAt = ? WHERE id = ?',
+        [googleId, avatar || user.avatar, new Date(), user.id]);
+      const [updRows] = await db.query(`SELECT ${SAFE_FIELDS} FROM User WHERE id = ?`, [user.id]);
+      user = updRows[0];
+    } else {
+      const [safeRows] = await db.query(`SELECT ${SAFE_FIELDS} FROM User WHERE id = ?`, [user.id]);
+      user = safeRows[0];
     }
 
     const token = signToken(user.id);
-    const { passwordHash: _, ...safeUser } = user;
-    res.json({ token, user: safeUser });
+    res.json({ token, user });
   } catch (error) {
     console.error('Google auth error:', error);
     res.status(401).json({ message: 'Google authentication failed' });
   }
 });
 
-// ─── Firebase-backed Google sign-in (accepts Firebase ID token) ──────────────
-router.post('/firebase-google', async (req, res) => {
-  const { idToken } = req.body;
 
-  if (!idToken) {
-    return res.status(400).json({ message: 'Firebase ID token is required' });
-  }
+// ─── Firebase-backed Google sign-in ──────────────────────────────────────────
+router.post('/firebase-google', async (req, res) => {
+  if (!firebaseApp) return res.status(503).json({ message: 'Firebase is not configured on this server' });
+  const { idToken } = req.body;
+  if (!idToken) return res.status(400).json({ message: 'Firebase ID token is required' });
 
   try {
     const decodedToken = await getAuth(firebaseApp).verifyIdToken(idToken);
@@ -138,17 +162,30 @@ router.post('/firebase-google', async (req, res) => {
 
     if (!email) return res.status(401).json({ message: 'Invalid Firebase token (no email)' });
 
-    let user = await prisma.user.findFirst({ where: { OR: [{ email }, { googleId: firebaseUid }] } });
+    const [rows] = await db.query('SELECT * FROM User WHERE email = ? OR googleId = ? LIMIT 1', [email, firebaseUid]);
+    let user = rows[0];
 
     if (!user) {
-      user = await prisma.user.create({ data: { googleId: firebaseUid, email, name, avatar } });
+      const id = randomUUID();
+      const now = new Date();
+      await db.query(
+        'INSERT INTO User (id, googleId, email, name, avatar, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [id, firebaseUid, email, name, avatar, now, now]
+      );
+      const [newRows] = await db.query(`SELECT ${SAFE_FIELDS} FROM User WHERE id = ?`, [id]);
+      user = newRows[0];
     } else if (!user.googleId) {
-      user = await prisma.user.update({ where: { id: user.id }, data: { googleId: firebaseUid, avatar: avatar || user.avatar } });
+      await db.query('UPDATE User SET googleId = ?, avatar = ?, updatedAt = ? WHERE id = ?',
+        [firebaseUid, avatar || user.avatar, new Date(), user.id]);
+      const [updRows] = await db.query(`SELECT ${SAFE_FIELDS} FROM User WHERE id = ?`, [user.id]);
+      user = updRows[0];
+    } else {
+      const [safeRows] = await db.query(`SELECT ${SAFE_FIELDS} FROM User WHERE id = ?`, [user.id]);
+      user = safeRows[0];
     }
 
     const token = signToken(user.id);
-    const { passwordHash: _, ...safeUser } = user;
-    res.json({ token, user: safeUser });
+    res.json({ token, user });
   } catch (error) {
     console.error('Firebase Google auth error:', error?.message || error);
     res.status(401).json({ message: 'Firebase Google authentication failed', detail: error?.message });
@@ -157,125 +194,103 @@ router.post('/firebase-google', async (req, res) => {
 
 // ─── Firebase Phone Auth ──────────────────────────────────────────────────────
 router.post('/firebase-phone', async (req, res) => {
+  if (!firebaseApp) return res.status(503).json({ message: 'Firebase is not configured on this server' });
   const { idToken } = req.body;
-
-  if (!idToken) {
-    return res.status(400).json({ message: 'Firebase ID token is required' });
-  }
+  if (!idToken) return res.status(400).json({ message: 'Firebase ID token is required' });
 
   try {
-    // Pass the explicit app instance to getAuth() to avoid the global
-    // 'default app' registry lookup that causes 'app/no-app' errors.
     const decodedToken = await getAuth(firebaseApp).verifyIdToken(idToken);
     const phone = decodedToken.phone_number;
 
-    if (!phone) {
-      return res.status(400).json({ message: 'No phone number associated with this Firebase account' });
-    }
+    if (!phone) return res.status(400).json({ message: 'No phone number associated with this Firebase account' });
 
-    // Find or create user
-    let user = await prisma.user.findFirst({
-      where: { phone }
-    });
+    const [rows] = await db.query('SELECT * FROM User WHERE phone = ? LIMIT 1', [phone]);
+    let user = rows[0];
 
     if (!user) {
-      // Create new user (using Firebase UID as a pseudo-password or leaving it null)
-      user = await prisma.user.create({
-        data: {
-          phone,
-          // Generate a placeholder email since it's required by our DB schema
-          email: `${phone.replace('+', '')}@tezsend-app.internal`,
-          name: 'Mobile User'
-        }
-      });
+      const id = randomUUID();
+      const now = new Date();
+      const email = `${phone.replace('+', '')}@tezsend-app.internal`;
+      await db.query(
+        'INSERT INTO User (id, phone, email, name, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)',
+        [id, phone, email, 'Mobile User', now, now]
+      );
+      const [newRows] = await db.query(`SELECT ${SAFE_FIELDS} FROM User WHERE id = ?`, [id]);
+      user = newRows[0];
+    } else {
+      const [safeRows] = await db.query(`SELECT ${SAFE_FIELDS} FROM User WHERE id = ?`, [user.id]);
+      user = safeRows[0];
     }
 
     const token = signToken(user.id);
-    const { passwordHash: _, ...safeUser } = user;
-    res.json({ token, user: safeUser });
+    res.json({ token, user });
   } catch (error) {
-    console.error('Firebase Phone auth error (code):', error?.code);
-    console.error('Firebase Phone auth error (message):', error?.message);
-    console.error('Firebase Phone auth error (full):', error);
+    console.error('Firebase Phone auth error:', error?.message);
     res.status(401).json({ message: 'Firebase authentication failed', detail: error?.message });
   }
 });
 
-// ─── Mock Phone Auth (Bypass Firebase) ────────────────────────────────────────
+// ─── Mock Phone Auth ──────────────────────────────────────────────────────────
 router.post('/mock-phone', async (req, res) => {
   const { phone } = req.body;
-
-  if (!phone) {
-    return res.status(400).json({ message: 'Phone number is required' });
-  }
+  if (!phone) return res.status(400).json({ message: 'Phone number is required' });
 
   try {
-    let user = await prisma.user.findFirst({ where: { phone } });
+    const [rows] = await db.query('SELECT * FROM User WHERE phone = ? LIMIT 1', [phone]);
+    let user = rows[0];
+
     if (!user) {
-      user = await prisma.user.create({
-        data: {
-          phone,
-          email: `${phone.replace('+', '')}@tezsend-mock.internal`,
-          name: 'Mock Mobile User'
-        }
-      });
+      const id = randomUUID();
+      const now = new Date();
+      await db.query(
+        'INSERT INTO User (id, phone, email, name, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)',
+        [id, phone, `${phone.replace('+', '')}@tezsend-mock.internal`, 'Mock Mobile User', now, now]
+      );
+      const [newRows] = await db.query(`SELECT ${SAFE_FIELDS} FROM User WHERE id = ?`, [id]);
+      user = newRows[0];
+    } else {
+      const [safeRows] = await db.query(`SELECT ${SAFE_FIELDS} FROM User WHERE id = ?`, [user.id]);
+      user = safeRows[0];
     }
 
     const token = signToken(user.id);
-    const { passwordHash: _, ...safeUser } = user;
-    res.json({ token, user: safeUser });
+    res.json({ token, user });
   } catch (error) {
     res.status(500).json({ message: 'Mock authentication failed' });
   }
 });
 
-
 // ─── Get current user ─────────────────────────────────────────────────────────
 router.get('/me', authenticate, async (req, res) => {
   try {
-    const user = await prisma.user.findUnique({
-      where: { id: req.userId },
-      select: {
-        id: true, name: true, email: true, phone: true, avatar: true,
-        googleId: true, createdAt: true
-      }
-    });
-    if (!user) return res.status(404).json({ message: 'User not found' });
-    res.json(user);
+    const [rows] = await db.query(`SELECT ${SAFE_FIELDS} FROM User WHERE id = ?`, [req.userId]);
+    if (rows.length === 0) return res.status(404).json({ message: 'User not found' });
+    res.json(rows[0]);
   } catch (error) {
-    res.status(500).json({ message: 'Error fetching user', error });
+    res.status(500).json({ message: 'Error fetching user', error: error.message });
   }
 });
 
-// ─── Link phone to an existing account (post email/Google signup) ─────────────
+// ─── Link phone to existing account ──────────────────────────────────────────
 router.post('/link-phone', authenticate, async (req, res) => {
+  if (!firebaseApp) return res.status(503).json({ message: 'Firebase is not configured on this server' });
   const { idToken } = req.body;
-
-  if (!idToken) {
-    return res.status(400).json({ message: 'Firebase ID token is required' });
-  }
+  if (!idToken) return res.status(400).json({ message: 'Firebase ID token is required' });
 
   try {
     const decodedToken = await getAuth(firebaseApp).verifyIdToken(idToken);
     const phone = decodedToken.phone_number;
 
-    if (!phone) {
-      return res.status(400).json({ message: 'No phone number associated with this Firebase token' });
-    }
+    if (!phone) return res.status(400).json({ message: 'No phone number associated with this Firebase token' });
 
-    // Check the phone isn't already taken by a different account
-    const existing = await prisma.user.findFirst({ where: { phone, NOT: { id: req.userId } } });
-    if (existing) {
+    const [existing] = await db.query('SELECT id FROM User WHERE phone = ? AND id != ?', [phone, req.userId]);
+    if (existing.length > 0) {
       return res.status(409).json({ message: 'This phone number is already linked to another account' });
     }
 
-    const user = await prisma.user.update({
-      where: { id: req.userId },
-      data: { phone },
-      select: { id: true, name: true, email: true, phone: true, avatar: true, googleId: true, createdAt: true }
-    });
-
-    res.json({ message: 'Phone number linked successfully', user });
+    await db.query('UPDATE User SET phone = ?, updatedAt = ? WHERE id = ?', [phone, new Date(), req.userId]);
+    const [rows] = await db.query(`SELECT ${SAFE_FIELDS} FROM User WHERE id = ?`, [req.userId]);
+    res.json({ message: 'Phone number linked successfully', user: rows[0] });
   } catch (error) {
     console.error('Link phone error:', error?.message);
     res.status(401).json({ message: 'Phone verification failed', detail: error?.message });

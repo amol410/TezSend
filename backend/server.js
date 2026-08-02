@@ -9,10 +9,34 @@ const transactionRoutes = require('./src/routes/transactions');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(cors());
+// ─── CORS ─────────────────────────────────────────────────────────────────────
+// Set ALLOWED_ORIGINS in .env as comma-separated list, e.g.:
+//   ALLOWED_ORIGINS=https://yourdomain.com,https://www.yourdomain.com
+const allowedOrigins = process.env.ALLOWED_ORIGINS
+  ? process.env.ALLOWED_ORIGINS.split(',').map((o) => o.trim())
+  : ['*'];
+
+app.use(
+  cors({
+    origin: allowedOrigins.includes('*')
+      ? '*'
+      : (origin, callback) => {
+          // allow server-to-server requests (no Origin header)
+          if (!origin || allowedOrigins.includes(origin)) {
+            callback(null, true);
+          } else {
+            callback(new Error(`CORS blocked for origin: ${origin}`));
+          }
+        },
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    credentials: true,
+  })
+);
+
 app.use(express.json());
 
-// Routes
+// ─── Routes ───────────────────────────────────────────────────────────────────
 app.use('/api/auth', authRoutes);
 app.use('/api/cards', cardRoutes);
 app.use('/api/beneficiaries', beneficiaryRoutes);
@@ -26,9 +50,29 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', message: 'TezSend API is running' });
 });
 
-// ✅ Start server (required for Hostinger VPS / any traditional Node host)
-app.listen(PORT, () => {
-  console.log(`🚀 TezSend API running on port ${PORT}`);
+// ─── Global error handler ─────────────────────────────────────────────────────
+app.use((err, req, res, next) => {
+  console.error('Unhandled error:', err);
+  res.status(500).json({ message: 'Internal server error' });
+});
+
+// ─── Start server ─────────────────────────────────────────────────────────────
+const server = app.listen(PORT, () => {
+  console.log(`🚀 TezSend API running on port ${PORT} [${process.env.NODE_ENV || 'development'}]`);
+});
+
+// Graceful shutdown on PM2 SIGINT
+process.on('SIGINT', () => {
+  console.log('SIGINT received – shutting down gracefully');
+  server.close(() => process.exit(0));
+});
+process.on('SIGTERM', () => {
+  console.log('SIGTERM received – shutting down gracefully');
+  server.close(() => process.exit(0));
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled promise rejection:', reason);
 });
 
 module.exports = app;
